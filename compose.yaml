@@ -6,11 +6,15 @@ services:
     environment:
       POSTGRES_URL: postgresql://queryforge:queryforge@postgres:5432/queryforge
       MONGO_URL: mongodb://mongo:27017
+      QUERYFORGE_HISTORY_DB: /code/data/benchmarks.sqlite3
+    volumes:
+      - history_data:/code/data
     depends_on:
       postgres:
         condition: service_healthy
       mongo:
         condition: service_healthy
+
   postgres:
     image: postgres:16
     environment:
@@ -24,6 +28,7 @@ services:
       retries: 15
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
   mongo:
     image: mongo:7
     healthcheck:
@@ -33,6 +38,8 @@ services:
       retries: 15
     volumes:
       - mongo_data:/data/db
+
 volumes:
   postgres_data:
   mongo_data:
+  history_data:
