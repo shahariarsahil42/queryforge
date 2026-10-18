@@ -41,7 +41,7 @@ _dataset_size = 0
 # -----------------------------
 
 class SetupRequest(BaseModel):
-    rows: int = Field(default=5000, ge=1000, le=20000)
+    rows: int = Field(default=5000, ge=1000, le=100000)
 
 
 class BenchmarkRequest(BaseModel):

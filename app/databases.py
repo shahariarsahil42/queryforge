@@ -34,21 +34,51 @@ def check_connections():
 
 
 def setup_products(products: list[dict]):
+    """Load synthetic records in batches for larger experiments."""
+    batch_size = 5000
+
     with postgres_connect() as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, category TEXT NOT NULL, price_cents INTEGER NOT NULL)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS products "
+            "(id INTEGER PRIMARY KEY, category TEXT NOT NULL, "
+            "price_cents INTEGER NOT NULL)"
+        )
         conn.execute("TRUNCATE TABLE products")
-        with conn.cursor() as cur:
-            cur.executemany(
-                "INSERT INTO products (id, category, price_cents) VALUES (%s, %s, %s)",
-                [(p["id"], p["category"], p["price_cents"]) for p in products],
-            )
         conn.execute("DROP INDEX IF EXISTS ix_products_category_price")
+
+        with conn.cursor() as cur:
+            for start in range(0, len(products), batch_size):
+                batch = products[start:start + batch_size]
+                cur.executemany(
+                    "INSERT INTO products "
+                    "(id, category, price_cents) VALUES (%s, %s, %s)",
+                    [
+                        (p["id"], p["category"], p["price_cents"])
+                        for p in batch
+                    ],
+                )
+
         conn.commit()
+        conn.execute("ANALYZE products")
+        conn.commit()
+
     with mongo_client() as client:
         coll = client["queryforge"]["products"]
         coll.drop()
-        coll.insert_many([{"_id": p["id"], "category": p["category"], "price_cents": p["price_cents"]} for p in products], ordered=False)
 
+        for start in range(0, len(products), batch_size):
+            batch = products[start:start + batch_size]
+            coll.insert_many(
+                [
+                    {
+                        "_id": p["id"],
+                        "category": p["category"],
+                        "price_cents": p["price_cents"],
+                    }
+                    for p in batch
+                ],
+                ordered=False,
+            )
 
 def set_index(database: str, enabled: bool):
     if database == "postgresql":

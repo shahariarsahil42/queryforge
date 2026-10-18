@@ -5,7 +5,7 @@
 </style></head><body><main>
 <div class="eyebrow">Engineering lab / v1.0</div><h1>QueryForge <span style="color:#88b9ff">↗</span></h1>
 <p class="lead">A reproducible, local cross-database query benchmarking experiment. Seed identical synthetic records into PostgreSQL and MongoDB, then observe indexing and query execution behavior.</p>
-<section class="panel"><h2>1. Prepare the lab</h2><div class="controls"><label>Rows per database<input id="rows" type="number" min="1000" max="20000" value="5000"></label><button id="seed">Seed synthetic data</button><button class="secondary" id="refresh">Check connections</button></div><div id="connections" class="status">Checking databases…</div></section>
+<section class="panel"><h2>1. Prepare the lab</h2><div class="controls"><label>Rows per database<input id="rows" type="number" min="1000" max="100000" value="5000"></label><button id="seed">Seed synthetic data</button><button class="secondary" id="refresh">Check connections</button></div><div id="connections" class="status">Checking databases…</div></section>
 <section class="panel"><h2>2. Run an experiment</h2><p>Filter <code>electronics</code>, price ≥ 5,000 cents, sort by price and ID, return 50 rows. Compare without and with compound indexes.</p><div class="controls"><label>Measured runs per case<input id="runs" type="number" min="5" max="100" value="20"></label><button id="benchmark">Run 4 benchmark cases</button></div><div id="message" class="status">Seed the data first.</div></section>
 <section id="results" class="panel hidden"><h2>3. Results</h2><div class="cards" id="cards"></div><h3>Measurements</h3><div class="overflow"><table><thead><tr><th>Database</th><th>Index</th><th>p50 (ms)</th><th>p95 (ms)</th><th>Mean (ms)</th><th>Sequential QPS</th></tr></thead><tbody id="table"></tbody></table></div><h3>Query plan observations</h3><div id="plans"></div><p class="small">Timings include Python/client and protocol overhead. MongoDB and PostgreSQL are different engines; do not interpret the numbers as a definitive ranking. Repeat larger experiments and inspect query plans.</p></section>
 
@@ -30,6 +30,22 @@
       <tbody id="history-list"></tbody>
     </table>
   </div>
+</section>
+
+
+<section class="panel">
+  <h2>5. Performance Scaling</h2>
+  <p>Median client-observed query latency across saved dataset sizes.
+     Lower is better.</p>
+  <button class="secondary" id="scaling-refresh">
+    Refresh scaling charts
+  </button>
+  <div id="scaling-status" class="status"></div>
+  <div id="scaling-charts" class="cards"></div>
+  <p class="small">
+    These are measurements from local experiments, not universal
+    database performance rankings. Repetition counts can differ.
+  </p>
 </section>
 
 <p class="footer">Local learning project • Synthetic data only • API docs at <a style="color:#88b9ff" href="/docs">/docs</a></p>
@@ -98,5 +114,162 @@ async function loadHistory() {
 }
 
 $('history-refresh').onclick = loadHistory;
+
+
+async function loadScaling() {
+  const container = $('scaling-charts');
+  const status = $('scaling-status');
+  container.replaceChildren();
+  status.textContent = 'Loading benchmark measurements…';
+
+  try {
+    const listing = await call('/api/history?limit=100');
+
+    const experiments = await Promise.all(
+      listing.experiments.map(e =>
+        call(`/api/history/${e.id}`)
+      )
+    );
+
+    experiments.sort(
+      (a, b) => a.rows_per_database - b.rows_per_database
+    );
+
+    if (!experiments.length) {
+      status.textContent = 'Run a benchmark to see scaling charts.';
+      return;
+    }
+
+    const cases = [
+      ['postgresql', false, 'PostgreSQL — No index'],
+      ['postgresql', true, 'PostgreSQL — Indexed'],
+      ['mongodb', false, 'MongoDB — No index'],
+      ['mongodb', true, 'MongoDB — Indexed']
+    ];
+
+    const NS = 'http://www.w3.org/2000/svg';
+
+    function element(tag, attributes = {}, content = '') {
+      const node = document.createElementNS(NS, tag);
+      for (const [key, value] of Object.entries(attributes)) {
+        node.setAttribute(key, value);
+      }
+      if (content !== '') node.textContent = content;
+      return node;
+    }
+
+    for (const [database, indexed, title] of cases) {
+      const observations = experiments.flatMap(exp => {
+        const match = exp.results.find(
+          r => r.database === database &&
+               r.indexed === indexed
+        );
+        return match ? [{
+          size: exp.rows_per_database,
+          latency: Number(match.p50_ms),
+          runs: exp.repetitions
+        }] : [];
+      }).filter(d => Number.isFinite(d.latency));
+
+      const card = document.createElement('div');
+      card.className = 'card';
+
+      const heading = document.createElement('h3');
+      heading.textContent = title;
+      card.appendChild(heading);
+
+      if (!observations.length) {
+        const empty = document.createElement('p');
+        empty.textContent = 'No measurements available.';
+        card.appendChild(empty);
+        container.appendChild(card);
+        continue;
+      }
+
+      const width = 490, height = 245;
+      const left = 58, right = 15, top = 18, bottom = 53;
+      const plotWidth = width - left - right;
+      const plotHeight = height - top - bottom;
+      const maximum = Math.max(
+        ...observations.map(d => d.latency), 0.001
+      ) * 1.15;
+
+      const x = i => left + (
+        observations.length === 1 ? plotWidth / 2 :
+        i * plotWidth / (observations.length - 1)
+      );
+      const y = value =>
+        top + plotHeight * (1 - value / maximum);
+
+      const svg = element('svg', {
+        viewBox: `0 0 ${width} ${height}`,
+        role: 'img',
+        'aria-label': title + ' latency scaling chart',
+        style: 'width:100%;height:auto;display:block'
+      });
+
+      for (let tick = 0; tick <= 4; tick++) {
+        const value = maximum * tick / 4;
+        const position = y(value);
+        svg.appendChild(element('line', {
+          x1: left, y1: position,
+          x2: width - right, y2: position,
+          stroke: '#35445f'
+        }));
+        svg.appendChild(element('text', {
+          x: left - 7, y: position + 4,
+          fill: '#b4c0d5', 'font-size': 12,
+          'text-anchor': 'end'
+        }, value.toFixed(2)));
+      }
+
+      const points = observations.map(
+        (d, i) => `${x(i)},${y(d.latency)}`
+      ).join(' ');
+
+      svg.appendChild(element('polyline', {
+        points,
+        fill: 'none',
+        stroke: '#88b9ff',
+        'stroke-width': 3,
+        'stroke-linejoin': 'round'
+      }));
+
+      observations.forEach((d, i) => {
+        svg.appendChild(element('circle', {
+          cx: x(i), cy: y(d.latency), r: 5,
+          fill: '#88b9ff'
+        }));
+
+        svg.appendChild(element('text', {
+          x: x(i), y: height - 29,
+          fill: '#e8edf6', 'font-size': 12,
+          'text-anchor': 'middle'
+        }, `${d.size / 1000}K`));
+
+        svg.appendChild(element('text', {
+          x: x(i), y: height - 10,
+          fill: '#91a6c5', 'font-size': 10,
+          'text-anchor': 'middle'
+        }, `${d.runs} runs`));
+      });
+
+      const axis = document.createElement('p');
+      axis.className = 'small';
+      axis.textContent = 'Y-axis: p50 latency (milliseconds)';
+      card.append(svg, axis);
+      container.appendChild(card);
+    }
+
+    status.textContent =
+      `Charts loaded from ${experiments.length} saved experiments.`;
+
+  } catch (error) {
+    status.textContent = `Error: ${error.message}`;
+  }
+}
+
+$('scaling-refresh').onclick = loadScaling;
+loadScaling();
 
 </script></body></html>
