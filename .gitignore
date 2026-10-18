@@ -16,3 +16,7 @@ htmlcov/
 history-backup/
 data/
 *.sqlite3
+
+# Local upgrade backups
+*.pre100k
+*.scaling-backup
